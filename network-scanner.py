@@ -1,22 +1,41 @@
-
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import scapy.all as scapy
 import optparse
 import socket
-import json
-from mac_vendor_lookup import MacLookup
+from mac_vendor_lookup import MacLookup, VendorNotFoundError
+
+
+def list_interfaces():
+    try:
+        ifconfig_result = subprocess.check_output(["ifconfig"]).decode('utf-8')
+        interfaces = re.findall(r'(\w+):.*?\n.*?ether ((?:\w{2}:){5}\w{2})', ifconfig_result, re.DOTALL)
+
+        if interfaces:
+            print("[+] Available network interfaces and their MAC addresses:")
+            for interface, mac in interfaces:
+                print(f"    Interface: {interface}, MAC: {mac}")
+        else:
+            print("[-] No network interfaces with MAC addresses found.")
+    except subprocess.CalledProcessError as e:
+        print(f"[-] Error occurred while running ifconfig: {e}")
 
 
 def get_arguments():
     parser = optparse.OptionParser()
     parser.add_option("-t", "--target", dest="target", help="Target IP / IP range.")
-    parser.add_option("-o", "--output", dest="output", help="Output file to save results (e.g., results.json).")
-    parser.add_option("-f", "--format", dest="format", help="Output format: table, json, or csv.", default="table")
     (options, arguments) = parser.parse_args()
     if not options.target:
-        parser.error("[-] Please specify a target IP/IP range, use --help for more info.")
+        parser.error("[-] Please specify a target IP range, use --help for more info.")
     return options
+
+
+def get_hostname(ip):
+    try:
+        return socket.gethostbyaddr(ip)[0]
+    except socket.herror:
+        return "Unknown"
+
 
 def scan(ip):
     arp_request = scapy.ARP(pdst=ip)
@@ -28,39 +47,37 @@ def scan(ip):
     for element in answered_list:
         mac_address = element[1].hwsrc
         try:
-            hostname = socket.gethostbyaddr(element[1].psrc)[0]
-        except socket.herror:
-            hostname = "Unknown"
+            vendor = MacLookup().lookup(mac_address)
+        except VendorNotFoundError:
+            vendor = "Unknown Vendor"
         client_dict = {
             "ip": element[1].psrc,
             "mac": mac_address,
-            "vendor": MacLookup().lookup(mac_address),
-            "hostname": hostname
+            "vendor": vendor,
+            "hostname": get_hostname(element[1].psrc)
         }
         clients_list.append(client_dict)
     return clients_list
 
-def print_result(results_list, format):
-    if format == "table":
-        print("IP\t\t\tMAC Address\t\t\tVendor\t\t\tHostname")
-        print("---------------------------------------------------------------------------------------------------")
-        for client in results_list:
-            print(f"{client['ip']}\t\t{client['mac']}\t\t{client['vendor']}\t\t{client['hostname']}")
-    elif format == "json":
-        print(json.dumps(results_list, indent=4))
-    elif format == "csv":
-        print("IP,MAC,Vendor,Hostname")
-        for client in results_list:
-            print(f"{client['ip']},{client['mac']},{client['vendor']},{client['hostname']}")
 
-def save_result(results_list, filename):
-    with open(filename, 'w') as f:
-        json.dump(results_list, f, indent=4)
-    print(f"[+] Results saved to {filename}")
+def print_result(results_list):
+    print("IP\t\t\tMAC Address\t\t\tVendor\t\t\tHost Name")
+    print("-----------------------------------------------------------------------------------------------")
+    for client in results_list:
+        print(f"{client['ip']}\t\t{client['mac']}\t\t{client['vendor']}\t\t{client['hostname']}")
 
-options = get_arguments()
-scan_result = scan(options.target)
-print_result(scan_result, options.format)
 
-if options.output:
-    save_result(scan_result, options.output)
+def update_mac_vendor_list():
+    print("[+] Updating MAC vendor list...")
+    MacLookup().update_vendors()
+    print("[+] MAC vendor list updated successfully.")
+
+
+if __name__ == "__main__":
+    options = get_arguments()
+
+    # Update the MAC vendor list before scanning
+    update_mac_vendor_list()
+
+    scan_result = scan(options.target)
+    print_result(scan_result)
